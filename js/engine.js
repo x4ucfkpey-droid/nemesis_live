@@ -203,3 +203,38 @@ class HandEngine {
     return { pos, amt: diff };
   }
 }
+
+/* サイドポット層計算(B1)。totalPut と folded から標準アルゴリズムでポット層を返す。
+   各層 = {amt, eligible:[pos]}(オールイン額=アクティブ者の投入額で層を切る)。
+   検算例: Hero 100 / V1 300 / V2 300 の3人全員オールイン(未コールなし)
+     → cap100: amt = 100×3 = 300, eligible = [Hero, V1, V2](メインポット)
+       cap300: amt = (300-100)×2 = 400, eligible = [V1, V2](サイドポット1)
+     Heroが最強でも獲得はメインの300のみ → heroNet = 300 - 100 = +200 */
+function computePots(eng) {
+  const u = eng.uncalled();
+  const contrib = [];
+  for (const pos of eng.positions) {
+    let put = eng.p[pos].totalPut;
+    if (u && u.pos === pos) put -= u.amt; // 未コール分は返還されポットに入らない
+    if (put > 0) contrib.push({ pos, put, folded: eng.p[pos].folded });
+  }
+  // 層の境界 = アクティブ(非フォールド)者の投入額(昇順)。全員同額なら単一ポット
+  const caps = [...new Set(contrib.filter(c => !c.folded).map(c => c.put))].sort((a, b) => a - b);
+  const pots = [];
+  let prev = 0;
+  for (const cap of caps) {
+    let amt = 0;
+    for (const c of contrib) amt += Math.max(0, Math.min(c.put, cap) - prev);
+    const eligible = contrib.filter(c => !c.folded && c.put >= cap - 1e-9).map(c => c.pos);
+    if (amt > 0) pots.push({ amt, eligible });
+    prev = cap;
+  }
+  // フォールド者が最大cap超を投入していた残額は最終層へ(通常は発生しない防御)
+  let leftover = 0;
+  for (const c of contrib) leftover += Math.max(0, c.put - prev);
+  if (leftover > 0) {
+    if (pots.length) pots[pots.length - 1].amt += leftover;
+    else pots.push({ amt: leftover, eligible: contrib.map(c => c.pos) });
+  }
+  return pots;
+}

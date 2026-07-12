@@ -72,8 +72,12 @@ function viewRec() {
     <div class="row2" style="margin-top:8px">
       <button class="btn" onclick="editExpense()">経費: ${fmtMoney(act.expense || 0)}</button>
       <button class="btn danger" onclick="endSession()">終了(精算)</button>
-    </div></div>`;
+    </div>
+    <button class="btn" style="width:100%;margin-top:8px" onclick="editCurStack()">現在スタック${act.curStack != null ? `: ${fmtMoney(act.curStack)}` : "を入力(暫定収支)"}</button>
+    ${act.curStack != null ? (() => { const pv = act.curStack - buyTotal - (act.expense || 0); return `<div class="mut" style="font-size:12px;margin-top:6px">暫定収支(現在スタック基準): <b style="color:${pv >= 0 ? "#2f9e63" : "var(--red)"}">${fmtMoney(pv, true)}</b></div>`; })() : ""}
+    </div>`;
   h += `<button class="btn primary cta" onclick="startHand('${act.id}')">＋ 新しいハンドを記録</button>`;
+  h += seatingCard(act);
   h += rosterReadsCard(act);
   if (hands.length) {
     h += `<div class="card"><div class="lbl">このセッションのハンド</div>`;
@@ -150,7 +154,8 @@ function doStartSession() {
   const rakeCap = +document.getElementById("ssRakeCap").value || 0;
   if (venue && !S.venues.includes(venue)) S.venues.push(venue);
   S.sessions.push({ id: uid("s"), startAt: Date.now(), endAt: null, venue, sb, bb, ante, rakePct, rakeCap,
-    tableSize: size, buyins: buy > 0 ? [{ amt: buy, at: Date.now() }] : [], cashout: null, notes: "", roster: [] });
+    tableSize: size, buyins: buy > 0 ? [{ amt: buy, at: Date.now() }] : [], cashout: null, notes: "", roster: [],
+    seating: ["HERO"], sitout: {}, curStack: null });
   save(); renderApp();
 }
 async function addBuyin() {
@@ -184,6 +189,90 @@ function buyinDel(i) {
   const act = activeSession(); if (!act) return;
   act.buyins.splice(i, 1); save(); renderApp(); buyinsSheet();
 }
+/* ---- A: 同卓メンバー(席順・時計回り)パネル ---- */
+function seatingCard(sess) {
+  if (!Array.isArray(sess.seating)) sess.seating = ["HERO"];
+  if (!sess.seating.includes("HERO")) sess.seating.unshift("HERO");
+  if (!sess.sitout) sess.sitout = {};
+  const so = sess.sitout;
+  const rows = sess.seating.map((e, i) => {
+    const isHero = e === "HERO";
+    const p = isHero ? null : playerById(e);
+    const name = isHero ? "ヒーロー(自分)" : (p ? p.name : "(削除済みプレイヤー)");
+    const out = !isHero && so[e];
+    return `<div class="sd-row" style="${out ? "opacity:.4" : ""}">
+      <button class="btn sm" onclick="seatingMove('${sess.id}',${i},-1)" ${i === 0 ? "disabled" : ""}>↑</button>
+      <button class="btn sm" onclick="seatingMove('${sess.id}',${i},1)" ${i === sess.seating.length - 1 ? "disabled" : ""}>↓</button>
+      <button style="flex:1;text-align:left;border:0;background:transparent;color:${isHero ? "var(--red)" : "var(--ink)"};font-family:inherit;font-size:14px;padding:6px 2px" ${isHero ? "disabled" : `onclick="seatingToggleSit('${sess.id}',${i})"`}>${isHero ? "★ " : ""}${esc(name)}${out ? ' <span class="mut">(離席)</span>' : ""}</button>
+      ${isHero ? "" : `<button class="btn sm danger" onclick="seatingRemove('${sess.id}',${i})">✕</button>`}
+    </div>`;
+  }).join("");
+  const active = sess.seating.filter(e => e === "HERO" || !so[e]).length;
+  return `<div class="card"><div class="lbl">同卓メンバー(席順・時計回り) — 着席${active}人</div>
+    ${rows}
+    <button class="btn" style="width:100%;margin-top:8px" onclick="seatingAdd('${sess.id}')">＋ メンバー追加</button>
+    <div class="note">名前タップ=離席⇔着席。↑↓で席順(時計回り)を調整。ハンド記録でヒーローのポジションを選ぶと、着席人数から卓サイズと全員のポジションを自動割当します(2人未満のときは従来の手動割当)。</div>
+  </div>`;
+}
+async function seatingAdd(sid) {
+  const sess = sessionById(sid); if (!sess) return;
+  if (!Array.isArray(sess.seating)) sess.seating = ["HERO"];
+  const seated = new Set(sess.seating);
+  const roster = (sess.roster || []).filter(pid => !seated.has(pid)).map(playerById).filter(Boolean);
+  const others = S.players.filter(p => !seated.has(p.id) && !(sess.roster || []).includes(p.id))
+    .sort((a, b) => (b.lastSeenAt || 0) - (a.lastSeenAt || 0)).slice(0, 20);
+  const item = p => `<button class="list-item" onclick="closeSheet('${p.id}')">${esc(p.name)}<span class="mut" style="float:right">${p.lastSeenAt ? fmtDate(p.lastSeenAt) : ""}</span></button>`;
+  const r = await openSheet(`
+    <div class="sh-title">メンバー追加(席順の末尾に入ります)</div>
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <input id="stNew" class="inp" placeholder="新規プレイヤー名" style="flex:1">
+      <button class="btn primary" onclick="closeSheet('__new__')">追加</button>
+    </div>
+    ${roster.length ? `<div class="lbl">今日の同卓者</div>` + roster.map(item).join("") : ""}
+    ${others.length ? `<div class="lbl">最近のプレイヤー</div>` + others.map(item).join("") : ""}`);
+  if (!r) return;
+  let pid = r;
+  if (r === "__new__") {
+    const el = document.getElementById("stNew");
+    const name = el && el.value.trim();
+    if (!name) return;
+    pid = addPlayer(name, sess.venue);
+  }
+  if (!sess.seating.includes(pid)) sess.seating.push(pid);
+  if (!sess.roster) sess.roster = [];
+  if (!sess.roster.includes(pid)) sess.roster.push(pid);
+  save(); renderApp();
+}
+function seatingMove(sid, i, dir) {
+  const sess = sessionById(sid); if (!sess || !sess.seating) return;
+  const j = i + dir;
+  if (j < 0 || j >= sess.seating.length) return;
+  const t = sess.seating[i]; sess.seating[i] = sess.seating[j]; sess.seating[j] = t;
+  save(); renderApp();
+}
+function seatingToggleSit(sid, i) {
+  const sess = sessionById(sid); if (!sess || !sess.seating) return;
+  const e = sess.seating[i];
+  if (!e || e === "HERO") return;
+  if (!sess.sitout) sess.sitout = {};
+  if (sess.sitout[e]) delete sess.sitout[e]; else sess.sitout[e] = true;
+  save(); renderApp();
+}
+function seatingRemove(sid, i) {
+  const sess = sessionById(sid); if (!sess || !sess.seating) return;
+  if (sess.seating[i] === "HERO") return;
+  const pid = sess.seating.splice(i, 1)[0];
+  if (sess.sitout) delete sess.sitout[pid];
+  save(); renderApp();
+}
+
+/* E: ライブ中の暫定収支確認用の現在スタック入力(任意) */
+async function editCurStack() {
+  const act = activeSession(); if (!act) return;
+  const v = await numpad({ title: "現在スタック(暫定収支の確認用)", init: act.curStack != null ? act.curStack : "", quick: [{ label: "100bb", amt: act.bb * 100 }, { label: "150bb", amt: act.bb * 150 }, { label: "200bb", amt: act.bb * 200 }] });
+  if (v != null) { act.curStack = v; save(); renderApp(); }
+}
+
 /* 同卓者のトップリードを卓上で即参照(n>=4のプレイヤーのみ)。
    rosterに加え、このセッションのハンドに登場した相手も自動収集する */
 function rosterReadsCard(act) {
@@ -239,6 +328,7 @@ function viewSession(sid) {
     <div class="big" style="color:${p >= 0 ? "#2f9e63" : "var(--red)"}">${fmtMoney(p, true)}</div>
     <div class="mut" style="font-size:12px;margin-top:4px">${s.sb}/${s.bb} · ${fmtDur((s.endAt || Date.now()) - s.startAt)} · ${hrs > 0 ? fmtMoney(p / hrs, true) + "/h" : ""} · バイイン${fmtMoney(s.buyins.reduce((a, b) => a + b.amt, 0))} → ${fmtMoney(s.cashout)}${s.expense ? ` · 経費${fmtMoney(s.expense)}` : ""}
       <button class="btn sm" style="margin-left:6px" onclick="sessExpense('${s.id}')">経費修正</button></div>
+    ${hands.length ? (() => { const hn = hands.reduce((a, h2) => a + (h2.heroNet || 0), 0); return `<div class="mut" style="font-size:12px;margin-top:4px">記録ハンド収支合計 <b style="color:${hn >= 0 ? "#2f9e63" : "var(--red)"}">${fmtMoney(hn, true)}</b> <span style="font-size:11px">(参考値。セッション収支との差=未記録ハンド分)</span></div>`; })() : ""}
     ${s.notes ? `<div class="note">${esc(s.notes)}</div>` : ""}
     <button class="btn sm danger" style="margin-top:10px" onclick="delSession('${s.id}')">セッション削除</button>
   </div>`;
@@ -272,6 +362,8 @@ function viewHandDetail(hid) {
     <div class="big" style="color:${(hd.heroNet || 0) >= 0 ? "#2f9e63" : "var(--red)"}">${fmtMoney(hd.heroNet, true)}</div>
     ${hd.note ? `<div class="note">${esc(hd.note)}</div>` : ""}
     <div class="chips sm" style="margin-top:8px">${HAND_TAGS.map((t, i) => `<button class="chip ${(hd.tags || []).includes(t) ? "on" : ""}" onclick="hdToggleTag('${hd.id}',${i})">${t}</button>`).join("")}</div>
+    <button class="btn" style="width:100%;margin-top:10px" onclick="editHand('${hd.id}')">${hd.complete === false ? "続きから記録(編集)" : "このハンドを編集"}</button>
+    ${hd.editedAt ? `<div class="mut" style="font-size:11px;margin-top:4px">編集済み: ${fmtDateTime(hd.editedAt)}</div>` : ""}
   </div>`;
   // GTOディープリンク(NEMESISナビゲーターで局面再現)
   const gl = gtoLinkForHand(hd);
@@ -474,6 +566,7 @@ function viewHands() {
     </select>
     <div class="chips sm" style="margin-top:8px">${HAND_TAGS.map((t, i) => `<button class="chip ${HFLT.tag === t ? "on" : ""}" onclick="hfSetTag(${i})">${t}</button>`).join("")}</div>
     <div class="mut" style="font-size:12px;margin-top:8px">${hs.length}ハンド · 合計 <b style="color:${net >= 0 ? "#2f9e63" : "var(--red)"}">${fmtMoney(net, true)}</b></div>
+    <div class="note">合計は記録ハンドのみの参考値(セッション収支とは一致しません)</div>
   </div>`;
   const LIMIT = 100;
   h += `<div class="card">`;
@@ -539,7 +632,7 @@ function viewStats() {
       if (!g) continue;
       h += `<tr><td>${pos}</td><td>${g[1].n}</td><td style="color:${g[1].net >= 0 ? "#2f9e63" : "var(--red)"}">${fmtMoney(g[1].net, true)}</td></tr>`;
     }
-    h += `</table></div>`;
+    h += `</table><div class="note">記録ハンドのみの参考値(セッション収支とは一致しません)</div></div>`;
   }
   return h;
 }
@@ -585,8 +678,15 @@ function viewMore() {
       <div><label class="f-lbl">デフォルトSB</label><input class="inp" type="number" value="${S.settings.defaultSb}" onchange="S.settings.defaultSb=+this.value;save()"></div>
       <div><label class="f-lbl">デフォルトBB</label><input class="inp" type="number" value="${S.settings.defaultBb}" onchange="S.settings.defaultBb=+this.value;save()"></div>
     </div>
-    <label class="f-lbl">NEMESIS URL(GTOディープリンク先)</label>
+    <label class="f-lbl">NEMESIS URL(GTOディープリンク先・レビュー送信先)</label>
     <input class="inp" value="${esc(S.settings.nemesisUrl || "http://localhost:8000")}" onchange="S.settings.nemesisUrl=this.value;save()" placeholder="http://192.168.1.10:8000">
+    <label class="f-lbl">レビュートークン(reviewToken)</label>
+    <input class="inp" value="${esc(S.settings.reviewToken || "")}" onchange="S.settings.reviewToken=this.value.trim();save()" placeholder="PCの data/review/config.json の token">
+    <label class="f-lbl" style="display:flex;align-items:center;gap:8px;margin-top:12px">
+      <input type="checkbox" ${S.settings.reviewAuto ? "checked" : ""} onchange="S.settings.reviewAuto=this.checked;save()" style="width:auto;min-height:0">
+      ハンド保存時にレビューを自動送信
+    </label>
+    <div class="note">レビュー機能はPCのNEMESIS(webapp/server.py)が稼働している時のみ動作します。トークンはPC起動時に自動生成され config.json に記録されます。</div>
   </div>`;
   h += `<div class="card"><div class="lbl">バックアップ${S.settings.lastBackupAt ? ` <span class="mut" style="font-weight:400">(前回: ${fmtDate(S.settings.lastBackupAt)})</span>` : ""}</div>
     <div class="row2">
@@ -650,4 +750,148 @@ async function wipeAll() {
 function backBar(view, param) {
   // 履歴があれば来た画面へ、無ければフォールバック先へ
   return `<button class="btn sm" style="margin-bottom:10px" onclick="goBack('${view}'${param ? `,'${param}'` : ""})">← 戻る</button>`;
+}
+
+/* ============ ハンドレビュー(NEMESISのGTO採点) ============ */
+const _reviewOpen = {}; // 展開中のhid
+function reviewToggle(hid) { _reviewOpen[hid] = !_reviewOpen[hid]; renderApp(); }
+
+/* 完了ハンドで結果も送信待ちも無いもの(直近50) */
+function reviewUnsentHands() {
+  const q = new Set((S.reviewQueue || []).map(x => x.hid));
+  const rv = S.reviews || {};
+  return S.hands.slice().sort((a, b) => b.ts - a.ts).slice(0, 50)
+    .filter(h => h.complete !== false && !q.has(h.id) && !rv[h.id] && handToGG(h));
+}
+
+/* 「未送信を送る」: 未送信ハンドをキューに積んで送信 */
+function reviewSendUnsent() {
+  if (!S.reviewQueue) S.reviewQueue = [];
+  const missing = reviewUnsentHands();
+  for (const h of missing)
+    if (!S.reviewQueue.some(q => q.hid === h.id)) S.reviewQueue.push({ hid: h.id, ts: Date.now(), tries: 0 });
+  if (missing.length) save();
+  if (!S.reviewQueue.length) { toast("未送信はありません"); return; }
+  if (!navigator.onLine) { toast("オフラインです。オンライン復帰時に自動再送します"); renderApp(); return; }
+  if (!(S.settings.nemesisUrl || "").trim()) { toast("設定にNEMESIS URLを入力してください"); return; }
+  toast("送信中…");
+  reviewFlush();
+  renderApp();
+}
+
+function _reviewBoardHTML(hd) {
+  const st = hd.streets || {};
+  const b = [];
+  if (st.flop && st.flop.cards) b.push(...st.flop.cards);
+  if (st.turn && st.turn.card) b.push(st.turn.card);
+  if (st.river && st.river.card) b.push(st.river.card);
+  return b.map(c => cardHTML(c)).join("");
+}
+
+/* 状態バッジ(未送信/送信待ち/待機/解析中/完了/対象外/エラー/PC応答なし) */
+function reviewBadge(hd, r, inQueue) {
+  const b = (txt, color) => `<span style="font-size:11px;color:${color}">${esc(txt)}</span>`;
+  if (r && r.noResponse) return b("PC応答なし", "#e0a13b");
+  if (r) {
+    if (r.status === "done" && r.summary) {
+      const s = r.summary, bl = s.blunder || 0;
+      return `<span style="font-size:11px">✓${s.best || 0} ○${s.ok || 0} <b style="color:${bl > 0 ? "var(--red)" : "var(--mut)"}">✗${bl}</b></span>`;
+    }
+    if (r.status === "done") return b("完了", "var(--green)");
+    if (r.status === "unsupported") return b("対象外", "var(--mut)");
+    if (r.status === "error") return b("エラー", "var(--red)");
+    if (r.status === "failed") return b("送信失敗", "var(--red)");
+    if (r.status === "rejected") return b("受付拒否", "var(--red)");
+    if (r.status === "solving") return b("解析中" + (r.eta_s != null ? `(~${Math.round(r.eta_s)}s)` : ""), "var(--blue)");
+    if (r.status === "queued") return b("待機" + (r.queue_pos != null ? `(${r.queue_pos}番)` : ""), "var(--blue)");
+    if (r.status === "unknown") return b("不明", "var(--mut)");
+  }
+  if (inQueue) return b("送信待ち" + (inQueue.tries ? `(再${inQueue.tries})` : ""), "var(--mut)");
+  if (hd.complete === false) return b("(途中)", "var(--mut)");
+  return b("未送信", "var(--mut)");
+}
+
+/* 再レビュー: 結果キャッシュを破棄して再送(サーバーはerror済みIDの再キューを受付) */
+function reviewRetry(hid) {
+  if (S.reviews) delete S.reviews[hid];
+  reviewEnqueue(hid);
+  toast("再送信しました");
+  renderApp();
+}
+function _reviewRetryBtn(hid) {
+  return `<button class="btn sm" style="margin-top:8px" onclick="event.stopPropagation();reviewRetry('${hid}')">再レビュー</button>`;
+}
+
+/* 展開時の本文 */
+function reviewDetail(hd, r) {
+  if (!r) return `<div class="note">まだ送信されていません。上部「未送信を送る」で送信できます。</div>`;
+  if (r.noResponse) return `<div class="note">PCから応答がありません。NEMESISサーバー(PC)が起動しているか、設定のURL/reviewTokenをご確認ください。</div>`;
+  if (r.status === "failed") return `<div class="note">送信に失敗しました${r.reason ? `: ${esc(r.reason)}` : ""}。</div>` + _reviewRetryBtn(hd.id);
+  if (r.status === "rejected") return `<div class="note">受付が拒否されました${r.reason ? `: ${esc(r.reason)}` : ""}。</div>`;
+  if (r.status === "queued") return `<div class="note">PCの処理待ち${r.queue_pos != null ? `(${r.queue_pos}番目)` : ""}${r.eta_s != null ? ` · 目安${Math.round(r.eta_s)}秒` : ""}。レビュータブを開いたまま少しお待ちください。</div>`;
+  if (r.status === "solving") return `<div class="note">解析中${r.eta_s != null ? `(残り目安${Math.round(r.eta_s)}秒)` : ""}。</div>`;
+  const body = r.body;
+  if (!body) {
+    if (r.status === "error") return `<div class="note">解析エラー: ${esc(r.error || "不明")}</div>` + _reviewRetryBtn(hd.id);
+    return `<div class="note">結果を取得中…</div>`;
+  }
+  if (body.status === "unsupported") return `<div class="note">レビュー対象外: ${esc(body.unsupported_reason || "チャート外・多人数・5bet+・ストラドル等")}</div>`;
+  if (body.status === "error") return `<div class="note">解析エラー: ${esc(body.error || "不明")}</div>` + _reviewRetryBtn(hd.id);
+
+  let h = "";
+  const s = body.summary;
+  if (s) h += `<div style="font-size:12px;margin-bottom:8px">${esc(s.headline || "")} <span class="mut">(best ${s.best || 0} / ok ${s.ok || 0} / <b style="color:${(s.blunder || 0) > 0 ? "var(--red)" : "inherit"}">blunder ${s.blunder || 0}</b>)</span></div>`;
+  const vcolor = v => v === "best" ? "var(--green)" : v === "blunder" ? "var(--red)" : "var(--mut)";
+  const decRow = d => {
+    let x = `<div class="read-row"><div class="read-head"><span class="read-dot" style="background:${vcolor(d.verdict)}"></span><span>${esc(d.text || "")}</span></div>`;
+    if (d.why) x += `<div class="read-ex">なぜ: ${esc(d.why)}</div>`;
+    if (d.exploit) x += `<div class="read-ex">相手タイプ別: ${esc(d.exploit)}</div>`;
+    return x + `</div>`;
+  };
+  if (body.preflop && body.preflop.length) {
+    h += `<div class="lbl" style="margin-top:6px">プリフロップ</div>`;
+    for (const d of body.preflop) h += decRow(d);
+  }
+  if (body.postflop && body.postflop.length) {
+    h += `<div class="lbl" style="margin-top:6px">ポストフロップ</div>`;
+    for (const d of body.postflop) h += decRow(d);
+  }
+  if (body.stop) h += `<div class="note" style="color:#e0a13b">${esc(body.stop)}</div>`;
+  if (body.disclaimer) h += `<div class="note" style="margin-top:8px">${esc(body.disclaimer)}</div>`;
+  const link = gtoLinkForHand(hd);
+  if (link && link.url) h += `<a class="btn sm" style="display:inline-block;margin-top:8px;text-decoration:none" href="${esc(link.url)}" target="_blank" rel="noopener">NEMESISで開く →</a>`;
+  return h;
+}
+
+function reviewRow(hd) {
+  const cards = hd.heroCards ? cardHTML(hd.heroCards[0]) + cardHTML(hd.heroCards[1]) : "";
+  const board = _reviewBoardHTML(hd);
+  const r = (S.reviews || {})[hd.id];
+  const inQueue = (S.reviewQueue || []).find(q => q.hid === hd.id);
+  const time = `${String(new Date(hd.ts).getHours()).padStart(2, "0")}:${String(new Date(hd.ts).getMinutes()).padStart(2, "0")}`;
+  let out = `<button class="list-item" onclick="reviewToggle('${hd.id}')">
+    <span>${fmtDate(hd.ts)} ${time} <b>${hd.heroPos || "—"}</b> ${cards}${board ? ` <span class="mut">${board}</span>` : ""}</span>
+    <span style="float:right">${reviewBadge(hd, r, inQueue)}</span></button>`;
+  if (_reviewOpen[hd.id]) out += `<div style="padding:2px 4px 12px">${reviewDetail(hd, r)}</div>`;
+  return out;
+}
+
+function viewReview() {
+  if (!S.reviewQueue) S.reviewQueue = [];
+  if (!S.reviews) S.reviews = {};
+  const unsent = S.reviewQueue.length + reviewUnsentHands().length;
+  let h = `<div class="card">
+    <div class="lbl">ハンドレビュー — NEMESISのGTO採点</div>
+    <div class="row2">
+      <button class="btn primary" onclick="reviewSendUnsent()">未送信を送る${unsent ? ` (${unsent})` : ""}</button>
+      <button class="btn" onclick="reviewPoll()">結果を更新</button>
+    </div>
+    <div class="note">保存した完了ハンドをPCのNEMESISが数分で採点します。このタブを開いている間、結果を自動取得します(25秒間隔)。PC URL・reviewTokenは「その他」→設定で。</div>
+  </div>`;
+  const hands = S.hands.slice().sort((a, b) => b.ts - a.ts).slice(0, 50);
+  if (!hands.length) { h += `<div class="card"><div class="note">まだ記録ハンドがありません。記録タブでハンドを保存すると、ここでレビューを受け取れます。</div></div>`; return h; }
+  h += `<div class="card">`;
+  for (const hd of hands) h += reviewRow(hd);
+  h += `</div>`;
+  return h;
 }

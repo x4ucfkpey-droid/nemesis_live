@@ -12,6 +12,7 @@ const VIEWS = {
   playerEdit: () => viewPlayerEdit(),
   stats: () => viewStats(),
   hands: () => viewHands(),
+  review: () => viewReview(),
   more: () => viewMore()
 };
 const NAV = [
@@ -19,6 +20,7 @@ const NAV = [
   { view: "rec", label: "記録", icon: "●" },
   { view: "players", label: "プレイヤー", icon: "◉" },
   { view: "stats", label: "スタッツ", icon: "▤" },
+  { view: "review", label: "レビュー", icon: "◈" },
   { view: "more", label: "その他", icon: "≡" }
 ];
 const NAV_OF = { session: "home", handDetail: "rec", hand: "rec", player: "players", playerEdit: "players", hands: "stats" };
@@ -51,6 +53,8 @@ function renderApp() {
   document.getElementById("nav").innerHTML = NAV.map(n =>
     `<button class="nav-btn ${cur === n.view ? "on" : ""}" onclick="go('${n.view}')">
       <span class="nav-ic">${n.icon}</span>${n.label}</button>`).join("");
+  // レビュータブ表示中のみポーリング稼働(離脱で停止)
+  if (typeof reviewOnRoute === "function") reviewOnRoute(route.view);
   // 記録中はタイマー表示更新のため定期再描画(recタブ表示中のみ)
 }
 
@@ -62,10 +66,16 @@ setInterval(() => {
 }, 60000);
 
 window.addEventListener("DOMContentLoaded", () => {
+  // 自己検知(S11): review.js が未ロードなら sw.js の ASSETS/CACHE版を疑う
+  if (typeof REVIEW_JS_LOADED === "undefined")
+    console.warn("review.js未ロード(sw.js ASSETSとCACHE版を確認)");
   renderApp();
   if ("serviceWorker" in navigator && location.protocol === "https:")
     navigator.serviceWorker.register("sw.js").catch(() => {});
   // 永続ストレージ要求: OSの容量圧迫時にサイトデータが消される優先度を下げる
   if (navigator.storage && navigator.storage.persist)
     navigator.storage.persist().catch(() => {});
+  // 起動時に未送信レビューを再送(圏外復帰は online イベントでも)
+  if (typeof reviewFlush === "function") reviewFlush();
 });
+window.addEventListener("online", () => { if (typeof reviewFlush === "function") reviewFlush(); });

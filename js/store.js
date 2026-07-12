@@ -5,11 +5,13 @@ const KEY = "nemesis_live_v1";
 
 const DEFAULT_STATE = () => ({
   version: 1,
-  settings: { email: "", handsPerHour: 25, currency: "¥", defaultVenue: "", defaultSb: 100, defaultBb: 200, heroLabel: "Hero", nemesisUrl: "http://localhost:8000", lastBackupAt: 0 },
+  settings: { email: "", handsPerHour: 25, currency: "¥", defaultVenue: "", defaultSb: 100, defaultBb: 200, heroLabel: "Hero", nemesisUrl: "http://localhost:8000", reviewToken: "", reviewAuto: true, lastBackupAt: 0 },
   venues: [],
   players: [],   // {id,name,venues:[],type:[],look:[],notes,createdAt,lastSeenAt,seenCount}
   sessions: [],  // {id,startAt,endAt,venue,sb,bb,tableSize,buyins:[{amt,at}],cashout,notes,roster:[pid]}
-  hands: []      // 設計書 §4 参照
+  hands: [],     // 設計書 §4 参照
+  reviewQueue: [], // ハンドレビュー未送信 [{hid,ts,tries}]
+  reviews: {}      // レビュー結果キャッシュ {hid:{status,summary,finished,body?,fetched,...}}
 });
 
 let S = load();
