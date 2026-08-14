@@ -365,6 +365,8 @@ function viewHandDetail(hid) {
     <button class="btn" style="width:100%;margin-top:10px" onclick="editHand('${hd.id}')">${hd.complete === false ? "続きから記録(編集)" : "このハンドを編集"}</button>
     ${hd.editedAt ? `<div class="mut" style="font-size:11px;margin-top:4px">編集済み: ${fmtDateTime(hd.editedAt)}</div>` : ""}
   </div>`;
+  // 日本語リプレイ(handview.js)。GG形式テキストより上に既定表示
+  h += handReplayHTML(hd);
   // GTOディープリンク(NEMESISナビゲーターで局面再現)
   const gl = gtoLinkForHand(hd);
   if (gl.url) {
@@ -379,9 +381,14 @@ function viewHandDetail(hid) {
     h += `<div class="card"><div class="lbl">NEMESIS<span style="color:var(--red)">.</span> で局面を再現</div>
       <div class="note">この局面は非対応: ${esc(gl.reason)}</div></div>`;
   }
-  if (gg) h += `<div class="card"><div class="lbl">HHテキスト(GG互換)</div><pre class="hh-pre">${esc(gg)}</pre>
-    <button class="btn sm" onclick="shareHH(handToGG(handById('${hd.id}')), '${hd.id}.txt')">このハンドを共有</button></div>`;
-  else h += `<div class="card"><div class="note">途中保存のハンドです(出力対象外)。</div></div>`;
+  if (gg) {
+    const open = !!_ggOpen[hd.id];
+    h += `<div class="card" style="padding:9px">
+      <button class="btn sm" style="width:100%;text-align:left" onclick="ggToggle('${hd.id}')">${open ? "▼" : "▶"} GG形式テキストを${open ? "隠す" : "表示"}</button>
+      ${open ? `<pre class="hh-pre" style="margin-top:9px">${esc(gg)}</pre>
+        <button class="btn sm" onclick="shareHH(handToGG(handById('${hd.id}')), '${hd.id}.txt')">このハンドを共有</button>` : ""}
+    </div>`;
+  } else h += `<div class="card"><div class="note">途中保存のハンドです(GG出力対象外)。</div></div>`;
   h += `<div class="card"><button class="btn danger" style="width:100%" onclick="delHand('${hd.id}')">このハンドを削除</button></div>`;
   return h;
 }
