@@ -10,7 +10,8 @@ function startHand(sessionId) {
   const last = handsOfSession(sessionId).slice(-1)[0];
   const tableSize = (last && last.tableSize) || sess.tableSize || 9;
   const posList = POS_BY_SIZE[tableSize];
-  const defStack = sess.bb * 100;
+  // 全員のデフォルトスタック=セッションの初回バイイン額(未入力時のみ100bb)
+  const defStack = (sess.buyins && sess.buyins[0] && +sess.buyins[0].amt) || sess.bb * 100;
   const stacks = {}, seatMap = {};
   let heroPos = null;
   if (last && last.tableSize === tableSize) {
